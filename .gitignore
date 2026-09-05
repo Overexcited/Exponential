@@ -1,0 +1,9 @@
+.gradle/
+.idea/
+.build/
+app/build/
+app/src/main/assets/eigent-web/
+app/src/main/python/eigent-backend/
+app/src/main/jniLibs/
+*.iml
+local.properties
