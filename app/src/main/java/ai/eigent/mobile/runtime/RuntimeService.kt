@@ -3,10 +3,7 @@ package ai.eigent.mobile.runtime
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
-import android.os.Process
 import androidx.core.app.ServiceCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import android.content.pm.ServiceInfo
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -53,9 +50,28 @@ class RuntimeService : Service() {
             catch (t: Throwable) { if (!stopping) updateFailure("Python backend: ${t.message}") }
         }
 
-        val exe = installLlamaServer()
-        if (exe == null) {
-            updateFailure("llama-server native executable is missing or could not be installed")
+        val binDir = File(filesDir, "bin").apply { mkdirs() }
+        val exe = File(binDir, "llama-server")
+        if (!exe.exists() || exe.length() == 0L) {
+            val temp = File(binDir, "llama-server.part")
+            try {
+                assets.open("bin/llama-server").use { input ->
+                    temp.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (!temp.renameTo(exe)) {
+                    temp.delete()
+                    updateFailure("llama-server executable could not be installed")
+                    return
+                }
+                exe.setExecutable(true, false)
+            } catch (t: Throwable) {
+                temp.delete()
+                updateFailure("llama-server executable is missing: ${t.message}")
+                return
+            }
+        }
+        if (!exe.setExecutable(true, false) && !exe.canExecute()) {
+            updateFailure("llama-server executable permission could not be set")
             return
         }
         val models = File(filesDir, "models").apply { mkdirs() }
@@ -75,27 +91,6 @@ class RuntimeService : Service() {
                     }
                 }
             } catch (t: Throwable) { if (!stopping) updateFailure("llama-server: ${t.message}") }
-        }
-    }
-
-    private fun installLlamaServer(): File? {
-        return try {
-            val binDir = File(filesDir, "bin").apply { mkdirs() }
-            val target = File(binDir, "llama-server")
-            val temp = File(binDir, "llama-server.part")
-            assets.open("bin/llama-server").use { input ->
-                temp.outputStream().use { output -> input.copyTo(output) }
-            }
-            if (target.exists()) target.delete()
-            if (!temp.renameTo(target)) {
-                temp.copyTo(target, overwrite = true)
-                temp.delete()
-            }
-            if (!target.setExecutable(true)) return null
-            target.takeIf { it.isFile && it.canExecute() }
-        } catch (t: Throwable) {
-            if (!stopping) android.util.Log.e("EigentLlama", "Failed to install llama-server", t)
-            null
         }
     }
 
