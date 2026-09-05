@@ -3,7 +3,10 @@ package ai.eigent.mobile.runtime
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.os.Process
 import androidx.core.app.ServiceCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import android.content.pm.ServiceInfo
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -50,12 +53,11 @@ class RuntimeService : Service() {
             catch (t: Throwable) { if (!stopping) updateFailure("Python backend: ${t.message}") }
         }
 
-        val exe = File(applicationInfo.nativeLibraryDir, "libllama-server.so")
-        if (!exe.exists()) {
-            updateFailure("llama-server native executable is missing")
+        val exe = installLlamaServer()
+        if (exe == null) {
+            updateFailure("llama-server native executable is missing or could not be installed")
             return
         }
-        exe.setExecutable(true)
         val models = File(filesDir, "models").apply { mkdirs() }
         llamaThread = thread(start = true, name = "eigent-llama") {
             try {
@@ -66,7 +68,6 @@ class RuntimeService : Service() {
                     "--models-dir", models.absolutePath
                 ).directory(filesDir)
                     .redirectErrorStream(true)
-                    .apply { environment()["LD_LIBRARY_PATH"] = applicationInfo.nativeLibraryDir }
                     .start()
                 llamaProcess?.inputStream?.bufferedReader()?.useLines { lines ->
                     lines.forEach { line ->
@@ -74,6 +75,27 @@ class RuntimeService : Service() {
                     }
                 }
             } catch (t: Throwable) { if (!stopping) updateFailure("llama-server: ${t.message}") }
+        }
+    }
+
+    private fun installLlamaServer(): File? {
+        return try {
+            val binDir = File(filesDir, "bin").apply { mkdirs() }
+            val target = File(binDir, "llama-server")
+            val temp = File(binDir, "llama-server.part")
+            assets.open("bin/llama-server").use { input ->
+                temp.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (target.exists()) target.delete()
+            if (!temp.renameTo(target)) {
+                temp.copyTo(target, overwrite = true)
+                temp.delete()
+            }
+            if (!target.setExecutable(true)) return null
+            target.takeIf { it.isFile && it.canExecute() }
+        } catch (t: Throwable) {
+            if (!stopping) android.util.Log.e("EigentLlama", "Failed to install llama-server", t)
+            null
         }
     }
 

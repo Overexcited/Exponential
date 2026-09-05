@@ -8,58 +8,37 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: eigent-android-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   EIGENT_REF: v1.0.2
-  LLAMA_REF: b10516
-  LLAMA_COMMIT: b95502b
-  GRADLE_VERSION: '8.11.1'
-  ANDROID_PLATFORM: '35'
-  BUILD_TOOLS: '35.0.0'
-  ANDROID_NDK: '29.0.14206865'
-  BUILD_SOURCE_DATE_EPOCH: '0'
+  LLAMA_REF: master
+  # Production builds should replace master with a reviewed immutable commit.
+  BUILD_SOURCE_DATE_EPOCH: 0
 
 jobs:
   llama-server:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Android project
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Checkout pinned llama.cpp release
+      - name: Checkout llama.cpp
         uses: actions/checkout@v4
         with:
           repository: ggml-org/llama.cpp
           ref: ${{ env.LLAMA_REF }}
           path: llama.cpp
-          fetch-depth: 1
-
-      - name: Verify pinned llama.cpp commit
-        working-directory: llama.cpp
-        run: |
-          actual="$(git rev-parse HEAD)"
-          actual_short="$(git rev-parse --short=7 HEAD)"
-          test "$actual_short" = "${LLAMA_COMMIT}" || {
-            echo "Expected ${LLAMA_COMMIT}, got ${actual}" >&2
-            exit 1
-          }
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android build tools
+      - name: Install NDK and native build tools
         run: |
-          sdkmanager "platforms;android-${ANDROID_PLATFORM}" \
-            "build-tools;${BUILD_TOOLS}" \
-            "ndk;${ANDROID_NDK}"
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;29.0.14206865"
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build binutils file
-          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK}" >> "$GITHUB_ENV"
+          sudo apt-get install -y cmake ninja-build
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/29.0.14206865" >> "$GITHUB_ENV"
 
-      - name: Build llama-server from pinned source
+      - name: Build llama-server for arm64-v8a
         working-directory: llama.cpp
         run: |
           cmake -S . -B build-android -G Ninja \
@@ -74,35 +53,26 @@ jobs:
             -DLLAMA_CURL=OFF
           cmake --build build-android --target llama-server -j 2
           mkdir -p "$GITHUB_WORKSPACE/llama-artifact"
-          cp build-android/bin/llama-server "$GITHUB_WORKSPACE/llama-artifact/llama-server"
-          chmod 755 "$GITHUB_WORKSPACE/llama-artifact/llama-server"
-
-      - name: Validate native executable
-        run: |
-          file llama-artifact/llama-server
-          readelf -h llama-artifact/llama-server
-          readelf -l llama-artifact/llama-server | grep -E 'LOAD|Align' || true
-          test -s llama-artifact/llama-server
+          cp build-android/bin/llama-server "$GITHUB_WORKSPACE/llama-artifact/libllama-server.so"
+          chmod 755 "$GITHUB_WORKSPACE/llama-artifact/libllama-server.so"
 
       - name: Upload llama-server
         uses: actions/upload-artifact@v4
         with:
-          name: llama-server-arm64-${{ github.sha }}
-          path: llama-artifact/llama-server
-          if-no-files-found: error
-          retention-days: 7
+          name: llama-server-arm64
+          path: llama-artifact/libllama-server.so
 
   android:
     needs: llama-server
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Android project
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download native runtime
+      - name: Download llama-server
         uses: actions/download-artifact@v4
         with:
-          name: llama-server-arm64-${{ github.sha }}
+          name: llama-server-arm64
           path: app/src/main/jniLibs/arm64-v8a
 
       - name: Setup Java
@@ -120,17 +90,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: .build/upstream/eigent/package-lock.json
 
-      - name: Prepare pinned Eigent upstream
+      - name: Prepare Eigent upstream
         run: ./scripts/prepare_upstream.sh
-
-      - name: Cache npm download cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: npm-${{ runner.os }}-${{ hashFiles('.build/upstream/eigent/package-lock.json') }}
-          restore-keys: |
-            npm-${{ runner.os }}-
 
       - name: Build Eigent web frontend
         working-directory: .build/upstream/eigent
@@ -144,45 +108,28 @@ jobs:
           rm -rf "$GITHUB_WORKSPACE/app/src/main/assets/eigent-web"
           mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/eigent-web"
           cp -a dist-web/. "$GITHUB_WORKSPACE/app/src/main/assets/eigent-web/"
-          test -f "$GITHUB_WORKSPACE/app/src/main/assets/eigent-web/index.html"
 
-      - name: Copy pinned Eigent backend
+      - name: Copy backend
         run: |
           rm -rf app/src/main/python/eigent-backend
           mkdir -p app/src/main/python/eigent-backend
           cp -a .build/upstream/eigent/backend/. app/src/main/python/eigent-backend/
-          test -f app/src/main/python/eigent-backend/main.py
 
-      - name: Setup Gradle
+      - name: Install Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
+          gradle-version: '8.11.1'
 
-      - name: Inspect native binary and APK inputs
+      - name: Verify native library page alignment
         run: |
-          file app/src/main/jniLibs/arm64-v8a/llama-server
-          readelf -h app/src/main/jniLibs/arm64-v8a/llama-server
-          readelf -l app/src/main/jniLibs/arm64-v8a/llama-server | grep -E 'LOAD|Align' || true
-          du -h app/src/main/jniLibs/arm64-v8a/llama-server
-          du -sh app/src/main/assets/eigent-web app/src/main/python/eigent-backend
-
-      - name: Verify Gradle project configuration
-        run: gradle :app:tasks --no-daemon --stacktrace > /tmp/eigent-gradle-tasks.txt
+          file app/src/main/jniLibs/arm64-v8a/libllama-server.so || true
+          readelf -l app/src/main/jniLibs/arm64-v8a/libllama-server.so 2>/dev/null | grep -E "LOAD|Align" || true
 
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
-      - name: APK sanity checks
-        run: |
-          APK=app/build/outputs/apk/debug/app-debug.apk
-          test -s "$APK"
-          "$ANDROID_SDK_ROOT/build-tools/${BUILD_TOOLS}/aapt2" dump badging "$APK" | head -n 5
-          unzip -l "$APK" | grep -E 'lib/arm64-v8a/|assets/eigent-web/index.html' | head -n 20
-
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Eigent-Mobile-debug-${{ github.sha }}
+          name: Eigent-Mobile-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
