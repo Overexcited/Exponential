@@ -41,7 +41,8 @@ jobs:
         working-directory: llama.cpp
         run: |
           actual="$(git rev-parse HEAD)"
-          test "$actual" = "${LLAMA_COMMIT}" || {
+          actual_short="$(git rev-parse --short=7 HEAD)"
+          test "$actual_short" = "${LLAMA_COMMIT}" || {
             echo "Expected ${LLAMA_COMMIT}, got ${actual}" >&2
             exit 1
           }
