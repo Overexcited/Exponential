@@ -130,7 +130,7 @@ jobs:
           node-version: '22'
 
       - name: Prepare pinned Eigent upstream
-        run: ./scripts/prepare_upstream.sh
+        run: bash ./scripts/prepare_upstream.sh
 
       - name: Cache npm download cache
         uses: actions/cache@v4
